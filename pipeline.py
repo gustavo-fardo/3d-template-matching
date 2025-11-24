@@ -4,13 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import copy
 
-DEBUG = True
+DEBUG = False
 
 @dataclass
 class Params:
     # --- GLOBAL SCALE ---
     # The most important parameter. Roughly 5-10% of your object size.
-    voxel_size: float = 0.15
+    voxel_size: float = 0.25
     
     # --- PREPROCESSING ---
     # Multipliers relative to voxel_size
@@ -121,7 +121,7 @@ def get_hard_constraints(template, voxel_size):
 print("--- 3D Object Pose Estimation Pipeline ---")
 print("Using Config:", CFG)
 
-OBJECT = "DellValleMaca" # "DellValleMaca" or "Stella"
+OBJECT = "Stella" # "DellValleMaca" or "Stella"
 IMAGE = f"data/{OBJECT}_xtion_1.png"
 TEMPLATE_SLICE = f"data/{OBJECT}_template_slice.pcd"
 TEMPLATE = f"data/{OBJECT}_template.pcd"

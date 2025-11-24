@@ -51,8 +51,8 @@ WIDTH  = 7/2  # 7 cm
 LENGTH = 7/2  # 7 cm (Depth)
 
 # OUTPUT FILES
-FILENAME_FULL = "data/dellvallemaca_template.pcd"
-FILENAME_FACE = "data/dellvallemaca_template_slice.pcd"
+FILENAME_FULL = "data/DellValleMaca_template.pcd"
+FILENAME_FACE = "data/DellValleMaca_template_slice.pcd"
 
 # --- GENERATE FULL TEMPLATE ---
 pcd_full = generate_box_pcd(HEIGHT, WIDTH, LENGTH, n_points=5000, mode='full')
