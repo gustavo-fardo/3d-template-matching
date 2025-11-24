@@ -4,6 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import copy
 
+DEBUG = True
+
 @dataclass
 class Params:
     # --- GLOBAL SCALE ---
@@ -119,9 +121,10 @@ def get_hard_constraints(template, voxel_size):
 print("--- 3D Object Pose Estimation Pipeline ---")
 print("Using Config:", CFG)
 
-IMAGE = "data/Stella_xtion_1.png"
-TEMPLATE_SLICE = "data/stella_template_slice.pcd"
-TEMPLATE = "data/stella_template.pcd"
+OBJECT = "DellValleMaca" # "DellValleMaca" or "Stella"
+IMAGE = f"data/{OBJECT}_xtion_1.png"
+TEMPLATE_SLICE = f"data/{OBJECT}_template_slice.pcd"
+TEMPLATE = f"data/{OBJECT}_template.pcd"
 
 # Derived Parameters (Calculated from Config)
 RANSAC_DIST = CFG.voxel_size * CFG.ransac_dist_mult
@@ -134,6 +137,9 @@ pcd = o3d.geometry.PointCloud.create_from_depth_image(depth_image, intrinsic)
 
 template = o3d.io.read_point_cloud(TEMPLATE_SLICE)
 centroid_template_original = np.asarray(template.points).mean(axis=0)
+
+if DEBUG:
+    o3d.visualization.draw_geometries([pcd], window_name="Scene Point Cloud")
 
 # 2. Get Constraints
 print("--- Step 1: Generating Hard Constraints (Self-Resampling) ---")
@@ -156,12 +162,23 @@ mask = (Z > 0) & (u >= xmin) & (u <= xmax) & (v >= ymin) & (v <= ymax)
 cropped = o3d.geometry.PointCloud()
 cropped.points = o3d.utility.Vector3dVector(points[mask])
 
+if DEBUG:
+    o3d.visualization.draw_geometries([cropped], window_name="Scene Object Mask Point Cloud")
+
 # 4. Clustering
 labels = np.array(cropped.cluster_dbscan(eps=CFG.dbscan_eps, min_points=CFG.dbscan_min_points, print_progress=True))
 max_label = labels.max()
 
 print("--- Step 2: Clustering Scene Point Cloud ---")
 print(f"> Found {max_label + 1} clusters")
+
+if DEBUG:
+    # Color each cluster differently and visualize all clusters in a single point cloud
+    clusters_draw = copy.deepcopy(cropped)
+    colors = plt.get_cmap("tab10")(labels / (max_label if max_label > 0 else 1))
+    colors[labels < 0, :3] = [0, 0, 0]  # Set noise points (label -1) to black
+    clusters_draw.colors = o3d.utility.Vector3dVector(colors[:, :3])
+    o3d.visualization.draw_geometries([clusters_draw], window_name="Clustered Scene Object Point Cloud", point_show_normal=False)
 
 # 5. Loop
 for cluster_label in range(max_label + 1):
@@ -186,6 +203,9 @@ for cluster_label in range(max_label + 1):
     template_aligned.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=CFG.voxel_size, max_nn=30))
     cluster_aligned.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=CFG.voxel_size, max_nn=30))
 
+    if DEBUG:
+        o3d.visualization.draw_geometries([template_aligned, cluster_aligned], window_name="Aligned Pointclouds", point_show_normal=False)
+    
     # Preprocess
     template_down, template_fpfh = preprocess_pcd(template_aligned, CFG.voxel_size)
     cluster_down, cluster_fpfh   = preprocess_pcd(cluster_aligned, CFG.voxel_size)
@@ -220,6 +240,20 @@ for cluster_label in range(max_label + 1):
     )
 
     print(f"> ICP Fitness: {result_icp.fitness:.3f} | Inlier RMSE: {result_icp.inlier_rmse:.3f}")
+
+    if DEBUG:
+        cluster_draw = copy.deepcopy(cluster_aligned)
+        template_draw = copy.deepcopy(template_aligned)
+
+        cluster_draw.paint_uniform_color([0, 1, 0])
+
+        template_draw.transform(result_ransac.transformation)
+        template_draw.paint_uniform_color([1, 0, 0])
+        o3d.visualization.draw_geometries([template_draw, cluster_draw], window_name="RANSAC-Registered Pointclouds", point_show_normal=False)
+
+        template_draw.transform(result_icp.transformation)
+        template_draw.paint_uniform_color([1, 0, 0])
+        o3d.visualization.draw_geometries([template_draw, cluster_draw], window_name="ICP-Registered Pointclouds", point_show_normal=False)
 
     # Verification
     accepted_fitness = (result_icp.fitness >= MIN_FITNESS)
