@@ -4,22 +4,27 @@ import numpy as np
 import matplotlib.pyplot as plt
 import copy
 
-DEBUG = False
+DEBUG_ALL = False
+DEBUG_ICP = False
+OBJECTS = ["DellValleMaca", "Stella"]
+N_RUNS = 10
 
 @dataclass
 class Params:
+    scaling_value: float = 1.0 / 50.0  # Scale raw depth image to meters
+
     # --- GLOBAL SCALE ---
     # The most important parameter. Roughly 5-10% of your object size.
-    voxel_size: float = 0.25
+    voxel_size: float = 0.005
     
     # --- PREPROCESSING ---
     # Multipliers relative to voxel_size
-    normal_radius_mult: float = 2.0  # Search radius for normal estimation
-    fpfh_radius_mult: float   = 5.0  # Search radius for feature description
+    normal_radius_mult: float = 1.0  # Search radius for normal estimation
+    fpfh_radius_mult: float   = 3.5  # Search radius for feature description
     
     # --- CLUSTERING (DBSCAN) ---
     # How close points must be to belong to the same cluster (in scene units)
-    dbscan_eps: float        = 2.0
+    dbscan_eps: float        = 0.02
     dbscan_min_points: int   = 500
     
     # --- RANSAC (Coarse Registration) ---
@@ -121,169 +126,187 @@ def get_hard_constraints(template, voxel_size):
 print("--- 3D Object Pose Estimation Pipeline ---")
 print("Using Config:", CFG)
 
-OBJECT = "Stella" # "DellValleMaca" or "Stella"
-IMAGE = f"data/{OBJECT}_xtion_1.png"
-TEMPLATE_SLICE = f"data/{OBJECT}_template_slice.pcd"
-TEMPLATE = f"data/{OBJECT}_template.pcd"
+for object in OBJECTS:
+    print(f"\n=== Processing Object: {object} ===")
+    IMAGE = f"data/{object}_xtion_1.png"
+    TEMPLATE_SLICE = f"data/{object}_template_slice.pcd"
+    TEMPLATE = f"data/{object}_template.pcd"
 
-# Derived Parameters (Calculated from Config)
-RANSAC_DIST = CFG.voxel_size * CFG.ransac_dist_mult
-ICP_DIST    = CFG.voxel_size * CFG.icp_dist_mult
+    # Derived Parameters (Calculated from Config)
+    RANSAC_DIST = CFG.voxel_size * CFG.ransac_dist_mult
+    ICP_DIST    = CFG.voxel_size * CFG.icp_dist_mult
 
-# 1. Load Data
-depth_image = o3d.io.read_image(IMAGE)
-intrinsic = o3d.camera.PinholeCameraIntrinsic(o3d.camera.PinholeCameraIntrinsicParameters.PrimeSenseDefault)
-pcd = o3d.geometry.PointCloud.create_from_depth_image(depth_image, intrinsic)
+    # 1. Load Data
+    depth_image = o3d.io.read_image(IMAGE)
+    intrinsic = o3d.camera.PinholeCameraIntrinsic(o3d.camera.PinholeCameraIntrinsicParameters.PrimeSenseDefault)
+    pcd = o3d.geometry.PointCloud.create_from_depth_image(depth_image, intrinsic)
+    pcd.scale(CFG.scaling_value, center=(0, 0, 0))
 
-template = o3d.io.read_point_cloud(TEMPLATE_SLICE)
-centroid_template_original = np.asarray(template.points).mean(axis=0)
+    template = o3d.io.read_point_cloud(TEMPLATE_SLICE)
+    centroid_template_original = np.asarray(template.points).mean(axis=0)
 
-if DEBUG:
-    o3d.visualization.draw_geometries([pcd], window_name="Scene Point Cloud")
+    if DEBUG_ALL:
+        o3d.visualization.draw_geometries([pcd], window_name="Scene Point Cloud")
 
-# 2. Get Constraints
-print("--- Step 1: Generating Hard Constraints (Self-Resampling) ---")
-MIN_FITNESS, MAX_RMSE = get_hard_constraints(template, CFG.voxel_size)
+    # 2. Get Constraints
+    print("==> Step 1: Generating Hard Constraints (Self-Resampling)")
+    MIN_FITNESS, MAX_RMSE = get_hard_constraints(template, CFG.voxel_size)
 
-# 3. Crop (Keeping your YOLO logic as is)
-txt_file = IMAGE.rsplit(".", 1)[0] + ".txt"
-cls_id, xc, yc, w, h = map(float, open(txt_file).read().split())
-img_np = np.asarray(depth_image)
-H, W = img_np.shape[:2]
-xmin, xmax = int((xc - w/2) * W), int((xc + w/2) * W)
-ymin, ymax = int((yc - h/2) * H), int((yc + h/2) * H)
+    # 3. Crop (Keeping your YOLO logic as is)
+    txt_file = IMAGE.rsplit(".", 1)[0] + ".txt"
+    cls_id, xc, yc, w, h = map(float, open(txt_file).read().split())
+    img_np = np.asarray(depth_image)
+    H, W = img_np.shape[:2]
+    xmin, xmax = int((xc - w/2) * W), int((xc + w/2) * W)
+    ymin, ymax = int((yc - h/2) * H), int((yc + h/2) * H)
 
-points = np.asarray(pcd.points)
-X, Y, Z = points[:,0], points[:,1], points[:,2]
-fx, fy, cx, cy = intrinsic.intrinsic_matrix[0,0], intrinsic.intrinsic_matrix[1,1], intrinsic.intrinsic_matrix[0,2], intrinsic.intrinsic_matrix[1,2]
-u = (X * fx / Z) + cx
-v = (Y * fy / Z) + cy
-mask = (Z > 0) & (u >= xmin) & (u <= xmax) & (v >= ymin) & (v <= ymax)
-cropped = o3d.geometry.PointCloud()
-cropped.points = o3d.utility.Vector3dVector(points[mask])
+    points = np.asarray(pcd.points)
+    X, Y, Z = points[:,0], points[:,1], points[:,2]
+    fx, fy, cx, cy = intrinsic.intrinsic_matrix[0,0], intrinsic.intrinsic_matrix[1,1], intrinsic.intrinsic_matrix[0,2], intrinsic.intrinsic_matrix[1,2]
+    u = (X * fx / Z) + cx
+    v = (Y * fy / Z) + cy
+    mask = (Z > 0) & (u >= xmin) & (u <= xmax) & (v >= ymin) & (v <= ymax)
+    cropped = o3d.geometry.PointCloud()
+    cropped.points = o3d.utility.Vector3dVector(points[mask])
 
-if DEBUG:
-    o3d.visualization.draw_geometries([cropped], window_name="Scene Object Mask Point Cloud")
+    if DEBUG_ALL:
+        o3d.visualization.draw_geometries([cropped], window_name="Scene Object Mask Point Cloud")
 
-# 4. Clustering
-labels = np.array(cropped.cluster_dbscan(eps=CFG.dbscan_eps, min_points=CFG.dbscan_min_points, print_progress=True))
-max_label = labels.max()
+    # 4. Clustering
+    labels = np.array(cropped.cluster_dbscan(eps=CFG.dbscan_eps, min_points=CFG.dbscan_min_points, print_progress=True))
+    max_label = labels.max()
 
-print("--- Step 2: Clustering Scene Point Cloud ---")
-print(f"> Found {max_label + 1} clusters")
+    print("==> Step 2: Clustering Scene Point Cloud")
+    print(f"  > Found {max_label + 1} clusters")
 
-if DEBUG:
-    # Color each cluster differently and visualize all clusters in a single point cloud
-    clusters_draw = copy.deepcopy(cropped)
-    colors = plt.get_cmap("tab10")(labels / (max_label if max_label > 0 else 1))
-    colors[labels < 0, :3] = [0, 0, 0]  # Set noise points (label -1) to black
-    clusters_draw.colors = o3d.utility.Vector3dVector(colors[:, :3])
-    o3d.visualization.draw_geometries([clusters_draw], window_name="Clustered Scene Object Point Cloud", point_show_normal=False)
+    if DEBUG_ALL:
+        # Color each cluster differently and visualize all clusters in a single point cloud
+        clusters_draw = copy.deepcopy(cropped)
+        colors = plt.get_cmap("tab10")(labels / (max_label if max_label > 0 else 1))
+        colors[labels < 0, :3] = [0, 0, 0]  # Set noise points (label -1) to black
+        clusters_draw.colors = o3d.utility.Vector3dVector(colors[:, :3])
+        o3d.visualization.draw_geometries([clusters_draw], window_name="Clustered Scene Object Point Cloud", point_show_normal=False)
 
-# 5. Loop
-for cluster_label in range(max_label + 1):
-    print("-> Cluster ", cluster_label)
-    cluster_points = np.asarray(cropped.points)[labels == cluster_label]
-    cluster = o3d.geometry.PointCloud()
-    cluster.points = o3d.utility.Vector3dVector(cluster_points)
-    
-    # Save original centroid for final transform
-    centroid_cluster = cluster_points.mean(axis=0)
+    print("==> Step 3: Registering Template to Clusters Best Result")
+    # 5. Loop
+    for cluster_label in range(max_label + 1):
+        print("=-> Cluster ", cluster_label)
 
-    template_working = copy.deepcopy(template)
-    cluster_working  = copy.deepcopy(cluster)
-
-    # Center & PCA
-    template_working = center_cloud(template_working)
-    cluster_working  = center_cloud(cluster_working)
-
-    template_aligned, R_t = pca_align(template_working)
-    cluster_aligned,  R_c = pca_align(cluster_working)
-    
-    template_aligned.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=CFG.voxel_size, max_nn=30))
-    cluster_aligned.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=CFG.voxel_size, max_nn=30))
-
-    if DEBUG:
-        o3d.visualization.draw_geometries([template_aligned, cluster_aligned], window_name="Aligned Pointclouds", point_show_normal=False)
-    
-    # Preprocess
-    template_down, template_fpfh = preprocess_pcd(template_aligned, CFG.voxel_size)
-    cluster_down, cluster_fpfh   = preprocess_pcd(cluster_aligned, CFG.voxel_size)
-
-    # RANSAC
-    checkers = [o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(RANSAC_DIST)]
-    
-    # Only add edge checker if enabled in config
-    if CFG.edge_length_thresh > 0:
-        checkers.append(o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(CFG.edge_length_thresh))
-
-    print("--- Step 3: RANSAC Registration ---")
-    result_ransac = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-        template_down, cluster_down, template_fpfh, cluster_fpfh,
-        mutual_filter=True,
-        max_correspondence_distance=RANSAC_DIST,
-        estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
-        ransac_n=CFG.ransac_n,
-        checkers=checkers,
-        criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(CFG.ransac_iter, CFG.ransac_conf)
-    )
-
-    print(f"> RANSAC Fitness: {result_ransac.fitness:.3f} | Inlier RMSE: {result_ransac.inlier_rmse:.3f}")
-
-    print("--- Step 4: ICP Refinement ---")
-    # ICP
-    result_icp = o3d.pipelines.registration.registration_icp(
-        template_aligned, cluster_aligned,
-        max_correspondence_distance=ICP_DIST,
-        init=result_ransac.transformation,
-        estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPlane()
-    )
-
-    print(f"> ICP Fitness: {result_icp.fitness:.3f} | Inlier RMSE: {result_icp.inlier_rmse:.3f}")
-
-    if DEBUG:
-        cluster_draw = copy.deepcopy(cluster_aligned)
-        template_draw = copy.deepcopy(template_aligned)
-
-        cluster_draw.paint_uniform_color([0, 1, 0])
-
-        template_draw.transform(result_ransac.transformation)
-        template_draw.paint_uniform_color([1, 0, 0])
-        o3d.visualization.draw_geometries([template_draw, cluster_draw], window_name="RANSAC-Registered Pointclouds", point_show_normal=False)
-
-        template_draw.transform(result_icp.transformation)
-        template_draw.paint_uniform_color([1, 0, 0])
-        o3d.visualization.draw_geometries([template_draw, cluster_draw], window_name="ICP-Registered Pointclouds", point_show_normal=False)
-
-    # Verification
-    accepted_fitness = (result_icp.fitness >= MIN_FITNESS)
-    accepted_rmse    = (result_icp.inlier_rmse <= MAX_RMSE)
-    if not accepted_fitness:
-        print("  > REJECTED: Fitness below threshold.")
-        print(f"    - Fitness: {result_icp.fitness:.4f} (Min: {MIN_FITNESS:.4f})")
-    if not accepted_rmse:
-        print("  > REJECTED: RMSE above threshold.")
-        print(f"    - RMSE: {result_icp.inlier_rmse:.4f} (Max: {MAX_RMSE:.4f})")
-    if accepted_fitness and accepted_rmse:
-        print("  > ACCEPTED: Meets all criteria.")
-
-        # Calculate Final Transform
-        Mat_Temp_Center = get_matrix(T=-centroid_template_original)
-        Mat_Temp_PCA = get_matrix(R=R_t.T)
-        Mat_Registration = result_icp.transformation
-        Mat_Clus_UnPCA = get_matrix(R=R_c)
-        Mat_Clus_UnCenter = get_matrix(T=centroid_cluster)
+        cluster_points = np.asarray(cropped.points)[labels == cluster_label]
+        cluster = o3d.geometry.PointCloud()
+        cluster.points = o3d.utility.Vector3dVector(cluster_points)
         
-        Final_Transform = Mat_Clus_UnCenter @ Mat_Clus_UnPCA @ Mat_Registration @ Mat_Temp_PCA @ Mat_Temp_Center
-        print("  > Final Transformation Matrix:")
-        print(Final_Transform)
+        # Save original centroid for final transform
+        centroid_cluster = cluster_points.mean(axis=0)
 
-        # Visualize Match
-        verification_template = o3d.io.read_point_cloud(TEMPLATE)
-        verification_template.paint_uniform_color([1, 0, 0])
-        verification_template.transform(Final_Transform)
+        template_working = copy.deepcopy(template)
+        cluster_working  = copy.deepcopy(cluster)
+
+        # Center & PCA
+        template_working = center_cloud(template_working)
+        cluster_working  = center_cloud(cluster_working)
+
+        template_aligned, R_t = pca_align(template_working)
+        cluster_aligned,  R_c = pca_align(cluster_working)
         
-        scene_check = copy.deepcopy(pcd)
-        scene_check.paint_uniform_color([0, 1, 0])
+        template_aligned.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=CFG.voxel_size, max_nn=30))
+        cluster_aligned.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=CFG.voxel_size, max_nn=30))
+
+        if DEBUG_ALL:
+            o3d.visualization.draw_geometries([template_aligned, cluster_aligned], window_name="Aligned Pointclouds", point_show_normal=False)
         
-        o3d.visualization.draw_geometries([scene_check, verification_template], window_name="Result")
+        # Preprocess
+        template_down, template_fpfh = preprocess_pcd(template_aligned, CFG.voxel_size)
+        cluster_down, cluster_fpfh   = preprocess_pcd(cluster_aligned, CFG.voxel_size)
+
+        best_fitness, best_rmse = 0.0, float('inf')
+
+        for run in range(N_RUNS):
+            print("--> Run ", run + 1)
+
+            # RANSAC
+            checkers = [o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(RANSAC_DIST)]
+            
+            # Only add edge checker if enabled in config
+            if CFG.edge_length_thresh > 0:
+                checkers.append(o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(CFG.edge_length_thresh))
+
+            result_ransac = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+                template_down, cluster_down, template_fpfh, cluster_fpfh,
+                mutual_filter=True,
+                max_correspondence_distance=RANSAC_DIST,
+                estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
+                ransac_n=CFG.ransac_n,
+                checkers=checkers,
+                criteria=o3d.pipelines.registration.RANSACConvergenceCriteria(CFG.ransac_iter, CFG.ransac_conf)
+            )
+
+            print(f"  > RANSAC Fitness: {result_ransac.fitness:.3f} | Inlier RMSE: {result_ransac.inlier_rmse:.3f}")
+
+            # ICP
+            result_icp = o3d.pipelines.registration.registration_icp(
+                template_aligned, cluster_aligned,
+                max_correspondence_distance=ICP_DIST,
+                init=result_ransac.transformation,
+                estimation_method=o3d.pipelines.registration.TransformationEstimationPointToPlane()
+            )
+
+            print(f"  > ICP Fitness: {result_icp.fitness:.3f} | Inlier RMSE: {result_icp.inlier_rmse:.3f}")
+
+            if DEBUG_ALL or DEBUG_ICP:
+
+                cluster_draw = copy.deepcopy(cluster_aligned)
+                template_draw = copy.deepcopy(template_aligned)
+
+                cluster_draw.paint_uniform_color([0, 1, 0])
+
+                if DEBUG_ALL:
+                    template_draw.transform(result_ransac.transformation)
+                    template_draw.paint_uniform_color([1, 0, 0])
+                    o3d.visualization.draw_geometries([template_draw, cluster_draw], window_name="RANSAC-Registered Pointclouds", point_show_normal=False)
+
+                template_draw.transform(result_icp.transformation)
+                template_draw.paint_uniform_color([1, 0, 0])
+                o3d.visualization.draw_geometries([template_draw, cluster_draw], window_name="ICP-Registered Pointclouds", point_show_normal=False)
+
+            if result_icp.fitness > best_fitness and result_icp.inlier_rmse < best_rmse:
+                best_result_ransac = result_ransac
+                best_result_icp    = result_icp
+                best_fitness      = result_icp.fitness
+                best_rmse         = result_icp.inlier_rmse
+
+        # Verification
+        print("==> Step 4: Verification of Best Result")
+        accepted_fitness = (best_result_icp.fitness >= MIN_FITNESS)
+        accepted_rmse    = (best_result_icp.inlier_rmse <= MAX_RMSE)
+        
+        print(f"  - Fitness: {best_result_icp.fitness:.4f} (Min: {MIN_FITNESS:.4f})")
+        print(f"  - RMSE: {best_result_icp.inlier_rmse:.4f} (Max: {MAX_RMSE:.4f})")
+        if not accepted_fitness:
+            print("  > REJECTED: Fitness below threshold.")
+        if not accepted_rmse:
+            print("  > REJECTED: RMSE above threshold.")
+        if accepted_fitness and accepted_rmse:
+            print("  > ACCEPTED: Meets all criteria.")
+
+
+            # Calculate Final Transform
+            Mat_Temp_Center = get_matrix(T=-centroid_template_original)
+            Mat_Temp_PCA = get_matrix(R=R_t.T)
+            Mat_Registration = best_result_icp.transformation
+            Mat_Clus_UnPCA = get_matrix(R=R_c)
+            Mat_Clus_UnCenter = get_matrix(T=centroid_cluster)
+            
+            Final_Transform = Mat_Clus_UnCenter @ Mat_Clus_UnPCA @ Mat_Registration @ Mat_Temp_PCA @ Mat_Temp_Center
+            print("==> Step 5: Final Transformation Matrix")
+            print(Final_Transform)
+
+            # Visualize Match
+            verification_template = o3d.io.read_point_cloud(TEMPLATE)
+            verification_template.paint_uniform_color([1, 0, 0])
+            verification_template.transform(Final_Transform)
+            
+            scene_check = copy.deepcopy(pcd)
+            scene_check.paint_uniform_color([0, 1, 0])
+            
+            o3d.visualization.draw_geometries([scene_check, verification_template], window_name="Result")

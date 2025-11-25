@@ -1,54 +1,69 @@
 import open3d as o3d
 import numpy as np
 
-def generate_box_pcd(height=0.20, width=0.07, depth=0.07, n_points=5000, mode='full'):
+def generate_box_pcd(height=0.20, width=0.07, depth=0.07,
+                     n_points=5000, mode='full'):
     """
-    Generates a point cloud box.
-    Units: Meters (0.20 = 20cm)
-    Mode: 'full' (Solid 3D box) or 'face' (Just the front panel)
-    """
-    print(f"Generating Box: {height}m x {width}m x {depth}m")
+    Generates a point cloud box with identical center alignment
+    for both full box and sliced version.
 
-    # 1. Create a Solid Mesh Box (Open3D primitive)
-    mesh_box = o3d.geometry.TriangleMesh.create_box(width=width, height=height, depth=depth)
-    
-    # 2. Compute Normals (needed for consistent point sampling)
+    Units: meters
+    mode:
+        'full' → full 3D solid box sampled
+        'face' → only one front slice (scan-like)
+    """
+
+    print(f"Generating Box: {height}m x {width}m x {depth}m | Mode={mode}")
+
+    # ==============================================================
+    # 1. Generate RAW (not centered) FULL box first
+    # ==============================================================
+    mesh_box = o3d.geometry.TriangleMesh.create_box(
+        width=width, height=height, depth=depth
+    )
     mesh_box.compute_vertex_normals()
-    
-    # 3. Sample Points (Turn Mesh into Point Cloud)
-    # Poisson Disk Sampling gives a nice, even distribution of points
-    pcd = mesh_box.sample_points_poisson_disk(number_of_points=n_points)
-    
-    # 4. (Optional) Filter for a Single Face
-    if mode == 'face':
-        # Get points as numpy array
-        pts = np.asarray(pcd.points)
-        
-        # Logic: Keep only points that are in the front 20% of the depth
-        # The box is created from (0,0,0) to (w, h, d).
-        # Let's keep points where depth (z) is less than 20% of the max depth
-        z_max = pts[:, 2].max()
-        
-        # Keep points within the front 20% of the depth
-        mask = pts[:, 2] < (0.2 * z_max)
-        
-        pcd = pcd.select_by_index(np.where(mask)[0])
-        print(f" > Mode 'face' selected. Points reduced to: {len(pcd.points)}")
 
-    # 5. Center the cloud (Good practice for templates)
-    pts = np.asarray(pcd.points)
-    pts -= pts.mean(axis=0)
-    pcd.points = o3d.utility.Vector3dVector(pts)
-    
-    # Estimate normals for the new PCD (crucial for registration later)
-    pcd.estimate_normals()
-    
-    return pcd
+    # Sample full box first (we will slice this one if needed)
+    pcd_full_raw = mesh_box.sample_points_poisson_disk(number_of_points=n_points)
+
+    # Convert to numpy to compute center
+    raw_full_pts = np.asarray(pcd_full_raw.points)
+    center_shift = raw_full_pts.mean(axis=0)
+
+    # ==============================================================
+    # 2. If slice mode → filter BEFORE centering, then shift SAME way
+    # ==============================================================
+    if mode == 'face':
+        pts = raw_full_pts  # raw uncentered points
+        
+        # Keep only points within front 20% of depth (like original code)
+        z_max = pts[:, 2].max()
+        mask = pts[:, 2] < (0.2 * z_max)
+        sliced = pts[mask]
+
+        # Apply same center shift as full box
+        sliced_centered = sliced - center_shift
+        print(f" > Slice reduced to {sliced_centered.shape[0]} points")
+
+        pcd_slice = o3d.geometry.PointCloud()
+        pcd_slice.points = o3d.utility.Vector3dVector(sliced_centered)
+        pcd_slice.estimate_normals()
+        return pcd_slice
+
+    # ==============================================================
+    # 3. If full mode → center normally
+    # ==============================================================
+    centered = raw_full_pts - center_shift
+    pcd_full = o3d.geometry.PointCloud()
+    pcd_full.points = o3d.utility.Vector3dVector(centered)
+    pcd_full.estimate_normals()
+
+    return pcd_full
 
 # --- CONFIGURATION ---
-HEIGHT = 20/2  # 20 cm
-WIDTH  = 7/2  # 7 cm
-LENGTH = 7/2  # 7 cm (Depth)
+HEIGHT = 0.20  # 20 cm
+WIDTH  = 0.07  # 7 cm
+LENGTH = 0.07  # 7 cm (Depth)
 
 # OUTPUT FILES
 FILENAME_FULL = "data/DellValleMaca_template.pcd"
