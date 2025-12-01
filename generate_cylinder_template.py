@@ -73,8 +73,8 @@ def generate_cylinder_pcd(height=0.114, diameter=0.066,
 # -----------------------------
 # CONFIGURATION (mm to meters)
 # -----------------------------
-HEIGHT   = 0.1140     # mm → m (half height)
-DIAMETER = 0.0660     # mm → m (half diameter)
+HEIGHT   = 0.140     # mm → m (half height)
+DIAMETER = 0.053     # mm → m (half diameter)
 
 # -----------------------------
 # OUTPUT FILES
@@ -101,7 +101,7 @@ print(f"Saved {FILENAME_FACE}")
 # -----------------------------
 # VISUALIZE BOTH (Side by Side)
 # -----------------------------
-pcd_face.translate([0.02, 0, 0])  # shift slice to the right
+pcd_face.translate([0.15, 0, 0])  # shift slice to the right
 o3d.visualization.draw_geometries(
     [pcd_full, pcd_face],
     window_name="Left: Full Cylinder | Right: Slice Scan"

@@ -6,8 +6,9 @@ import copy
 
 DEBUG_ALL = False
 DEBUG_ICP = False
-OBJECTS = ["DellValleMaca", "Stella"]
-N_RUNS = 10
+# OBJECTS = ["DellValleMaca", "Stella", "DellValleMacaRotated"]
+OBJECTS = [ "Stella"]
+N_RUNS = 1
 
 @dataclass
 class Params:
